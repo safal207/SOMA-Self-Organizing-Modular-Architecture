@@ -17,3 +17,7 @@ serde_json.workspace = true
 [[bin]]
 name = "soma-sim"
 path = "src/main.rs"
+
+[[bin]]
+name = "pulse"
+path = "src/bin/pulse.rs"
