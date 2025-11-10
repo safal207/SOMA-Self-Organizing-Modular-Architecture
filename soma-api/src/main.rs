@@ -11,17 +11,22 @@ use serde::{Deserialize, Serialize};
 use soma_bridge::Signal as BridgeSignal;
 use soma_core::{CellRole, StemProcessor};
 use std::{
+    env,
     net::SocketAddr,
     sync::{Arc, Mutex},
 };
 use tokio::sync::broadcast;
 use tower_http::cors::CorsLayer;
 
+mod mesh;
+use mesh::MeshNode;
+
 /// Состояние приложения, разделяемое между обработчиками
 #[derive(Clone)]
 struct AppState {
     stem: Arc<Mutex<StemProcessor>>,
     signal_tx: broadcast::Sender<ApiSignal>,
+    mesh: Arc<MeshNode>,
 }
 
 /// API-представление сигнала
@@ -72,13 +77,26 @@ struct DistributionResponse {
 
 #[tokio::main]
 async fn main() {
+    // Получить ID узла из переменной окружения или сгенерировать
+    let node_id = env::var("NODE_ID").unwrap_or_else(|_| {
+        format!("node_{}", chrono::Utc::now().timestamp_millis() % 10000)
+    });
+
+    // Получить порт из переменной окружения или использовать 8080
+    let port: u16 = env::var("PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(8080);
+
     // Инициализация состояния
     let stem = Arc::new(Mutex::new(StemProcessor::new()));
     let (signal_tx, _) = broadcast::channel::<ApiSignal>(100);
+    let mesh = Arc::new(MeshNode::new(&node_id));
 
     let state = AppState {
         stem: stem.clone(),
         signal_tx: signal_tx.clone(),
+        mesh: mesh.clone(),
     };
 
     // Построение роутера
@@ -90,26 +108,45 @@ async fn main() {
         .route("/signal", post(post_signal))
         .route("/stimulate", post(stimulate))
         .route("/ws", get(websocket_handler))
+        .route("/mesh", get(mesh_handler))
+        .route("/peers", get(get_peers))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
     // Запуск фонового процесса обновления
-    tokio::spawn(background_update(stem, signal_tx));
+    tokio::spawn(background_update(stem.clone(), signal_tx));
+
+    // Запуск mesh фоновых процессов
+    let mesh_heartbeat = mesh.clone();
+    tokio::spawn(async move {
+        mesh_heartbeat.start_heartbeat_loop().await;
+    });
+
+    let mesh_cleanup = mesh.clone();
+    tokio::spawn(async move {
+        mesh_cleanup.start_cleanup_loop(15000).await; // 15 секунд timeout
+    });
+
+    // Запуск state sync процесса
+    tokio::spawn(mesh_state_sync(stem, mesh));
 
     // Запуск сервера
-    let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
     println!("\n╔═══════════════════════════════════════╗");
-    println!("║  🚪 SOMA API Server Started          ║");
+    println!("║  🌐 SOMA Node Mesh v0.6              ║");
     println!("╚═══════════════════════════════════════╝\n");
-    println!("Listening on: http://{}", addr);
+    println!("Node ID: {}", node_id);
+    println!("Listening on: http://{}:{}", addr.ip(), port);
     println!("\nEndpoints:");
     println!("  GET  /              - API information");
     println!("  GET  /state         - System state");
     println!("  GET  /cells         - List all cells");
     println!("  GET  /distribution  - Role distribution");
+    println!("  GET  /peers         - Connected peers");
     println!("  POST /signal        - Send signal");
     println!("  POST /stimulate     - Stimulate system");
     println!("  GET  /ws            - WebSocket stream");
+    println!("  GET  /mesh          - Mesh peer connection");
     println!("\nPress Ctrl+C to stop.\n");
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
@@ -117,19 +154,23 @@ async fn main() {
 }
 
 /// Корневой эндпоинт - информация об API
-async fn root() -> Json<serde_json::Value> {
+async fn root(State(state): State<AppState>) -> Json<serde_json::Value> {
     Json(serde_json::json!({
-        "name": "SOMA API",
-        "version": "0.5.0",
-        "description": "Self-Organizing Modular Architecture API",
+        "name": "SOMA Node Mesh",
+        "version": "0.6.0",
+        "description": "Self-Organizing Modular Architecture - Node Mesh",
+        "node_id": state.mesh.id,
+        "peer_count": state.mesh.get_peer_count(),
         "endpoints": {
             "/": "API information",
             "/state": "GET - System state",
             "/cells": "GET - List all cells",
             "/distribution": "GET - Role distribution",
+            "/peers": "GET - Connected peers",
             "/signal": "POST - Send signal {id, value}",
             "/stimulate": "POST - Stimulate system {activity}",
-            "/ws": "GET - WebSocket real-time stream"
+            "/ws": "GET - WebSocket real-time stream",
+            "/mesh": "GET - Mesh peer connection (WebSocket)"
         }
     }))
 }
@@ -314,5 +355,59 @@ async fn background_update(
         }
 
         cycle += 1;
+    }
+}
+
+/// Mesh WebSocket обработчик для peer-to-peer соединений
+async fn mesh_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    ws.on_upgrade(|socket| mesh_connection_task(socket, state))
+}
+
+/// Задача обработки mesh соединения
+async fn mesh_connection_task(socket: WebSocket, state: AppState) {
+    state.mesh.handle_peer_connection(socket).await;
+}
+
+/// Получить список подключенных peers
+async fn get_peers(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let alive_peers = state.mesh.get_alive_peers(15000); // 15 секунд timeout
+
+    let peers_json: Vec<serde_json::Value> = alive_peers
+        .iter()
+        .map(|peer| {
+            serde_json::json!({
+                "id": peer.id,
+                "last_seen_ms": peer.last_seen,
+                "cells": peer.cells,
+                "generation": peer.generation,
+                "load": peer.load,
+                "alive": peer.is_alive(15000)
+            })
+        })
+        .collect();
+
+    Json(serde_json::json!({
+        "node_id": state.mesh.id,
+        "peer_count": state.mesh.get_peer_count(),
+        "peers": peers_json
+    }))
+}
+
+/// Фоновая задача синхронизации состояния mesh
+async fn mesh_state_sync(stem: Arc<Mutex<StemProcessor>>, mesh: Arc<MeshNode>) {
+    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
+
+    loop {
+        interval.tick().await;
+
+        let (cells, generation, load) = {
+            let stem = stem.lock().unwrap();
+            (stem.cell_count(), stem.generation, stem.load)
+        };
+
+        mesh.broadcast_state(cells, generation, load);
     }
 }
