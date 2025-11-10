@@ -5,7 +5,8 @@ members = [
     "soma-vnp",
     "soma-bridge",
     "soma-mind",
-    "soma-sim"
+    "soma-sim",
+    "soma-api"
 ]
 
 [workspace.package]
