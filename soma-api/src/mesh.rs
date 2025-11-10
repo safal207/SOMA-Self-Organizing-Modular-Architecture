@@ -7,6 +7,16 @@ use tokio::time::{interval, Duration};
 use chrono::Utc;
 use futures::{StreamExt, SinkExt};
 
+#[derive(Debug, Clone, Serialize)]
+pub struct ResonanceStats {
+    pub peer_count: usize,
+    pub avg_load: f64,
+    pub min_load: f64,
+    pub max_load: f64,
+    pub resonance: f64,
+    pub variance: f64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum MeshMessage {
@@ -207,6 +217,100 @@ impl MeshNode {
 
     pub fn get_peer_count(&self) -> usize {
         self.peers.lock().unwrap().len()
+    }
+
+    /// Вычислить резонанс сети - среднее отклонение от текущей нагрузки
+    pub fn compute_network_resonance(&self, current_load: f64) -> f64 {
+        let peers = self.peers.lock().unwrap();
+
+        if peers.is_empty() {
+            return 1.0; // Полный резонанс если нет peers
+        }
+
+        let peer_loads: Vec<f64> = peers.values()
+            .filter(|p| p.is_alive(15000))
+            .map(|p| p.load)
+            .collect();
+
+        if peer_loads.is_empty() {
+            return 1.0;
+        }
+
+        // Вычисляем среднюю нагрузку сети
+        let avg_load: f64 = peer_loads.iter().sum::<f64>() / peer_loads.len() as f64;
+
+        // Резонанс = 1.0 - нормализованная разница
+        let diff = (current_load - avg_load).abs();
+        (1.0 - diff.min(1.0)).max(0.0)
+    }
+
+    /// Вычислить корректировку нагрузки для достижения резонанса
+    pub fn compute_resonance_correction(&self, current_load: f64, strength: f64) -> f64 {
+        let peers = self.peers.lock().unwrap();
+
+        if peers.is_empty() {
+            return 0.0;
+        }
+
+        let peer_loads: Vec<f64> = peers.values()
+            .filter(|p| p.is_alive(15000))
+            .map(|p| p.load)
+            .collect();
+
+        if peer_loads.is_empty() {
+            return 0.0;
+        }
+
+        // Средняя нагрузка сети
+        let avg_load: f64 = peer_loads.iter().sum::<f64>() / peer_loads.len() as f64;
+
+        // Корректировка = разница * сила (0.0-1.0)
+        let delta = (avg_load - current_load) * strength;
+
+        delta
+    }
+
+    /// Получить статистику резонанса сети
+    pub fn get_resonance_stats(&self, current_load: f64) -> ResonanceStats {
+        let peers = self.peers.lock().unwrap();
+
+        let alive_peers: Vec<&PeerInfo> = peers.values()
+            .filter(|p| p.is_alive(15000))
+            .collect();
+
+        if alive_peers.is_empty() {
+            return ResonanceStats {
+                peer_count: 0,
+                avg_load: current_load,
+                min_load: current_load,
+                max_load: current_load,
+                resonance: 1.0,
+                variance: 0.0,
+            };
+        }
+
+        let loads: Vec<f64> = alive_peers.iter().map(|p| p.load).collect();
+        let avg_load = loads.iter().sum::<f64>() / loads.len() as f64;
+        let min_load = loads.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max_load = loads.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+
+        // Variance
+        let variance = loads.iter()
+            .map(|l| (l - avg_load).powi(2))
+            .sum::<f64>() / loads.len() as f64;
+
+        // Resonance
+        let diff = (current_load - avg_load).abs();
+        let resonance = (1.0 - diff.min(1.0)).max(0.0);
+
+        ResonanceStats {
+            peer_count: alive_peers.len(),
+            avg_load,
+            min_load,
+            max_load,
+            resonance,
+            variance,
+        }
     }
 
     pub async fn start_heartbeat_loop(self: Arc<Self>) {
