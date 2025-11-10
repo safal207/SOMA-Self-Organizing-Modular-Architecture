@@ -110,6 +110,7 @@ async fn main() {
         .route("/ws", get(websocket_handler))
         .route("/mesh", get(mesh_handler))
         .route("/peers", get(get_peers))
+        .route("/peers/register", post(register_peer))
         .route("/resonance", get(get_resonance))
         .layer(CorsLayer::permissive())
         .with_state(state);
@@ -128,6 +129,11 @@ async fn main() {
         mesh_cleanup.start_cleanup_loop(15000).await; // 15 секунд timeout
     });
 
+    let mesh_reconnect = mesh.clone();
+    tokio::spawn(async move {
+        mesh_reconnect.start_reconnect_loop().await;
+    });
+
     // Запуск state sync процесса
     tokio::spawn(mesh_state_sync(stem.clone(), mesh.clone()));
 
@@ -137,7 +143,7 @@ async fn main() {
     // Запуск сервера
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     println!("\n╔═══════════════════════════════════════╗");
-    println!("║  🌊 SOMA Resonance Mesh v0.7         ║");
+    println!("║  🧬 SOMA Self-Healing Mesh v0.8      ║");
     println!("╚═══════════════════════════════════════╝\n");
     println!("Node ID: {}", node_id);
     println!("Listening on: http://{}:{}", addr.ip(), port);
@@ -146,7 +152,8 @@ async fn main() {
     println!("  GET  /state         - System state");
     println!("  GET  /cells         - List all cells");
     println!("  GET  /distribution  - Role distribution");
-    println!("  GET  /peers         - Connected peers");
+    println!("  GET  /peers         - Connected peers (with health)");
+    println!("  POST /peers/register - Register peer for auto-reconnect");
     println!("  GET  /resonance     - Network resonance stats");
     println!("  POST /signal        - Send signal");
     println!("  POST /stimulate     - Stimulate system");
@@ -161,9 +168,9 @@ async fn main() {
 /// Корневой эндпоинт - информация об API
 async fn root(State(state): State<AppState>) -> Json<serde_json::Value> {
     Json(serde_json::json!({
-        "name": "SOMA Resonance Mesh",
-        "version": "0.7.0",
-        "description": "Self-Organizing Modular Architecture - Node Mesh",
+        "name": "SOMA Self-Healing Mesh",
+        "version": "0.8.0",
+        "description": "Self-Organizing Modular Architecture - Self-Healing Node Mesh",
         "node_id": state.mesh.id,
         "peer_count": state.mesh.get_peer_count(),
         "endpoints": {
@@ -171,8 +178,9 @@ async fn root(State(state): State<AppState>) -> Json<serde_json::Value> {
             "/state": "GET - System state",
             "/cells": "GET - List all cells",
             "/distribution": "GET - Role distribution",
-            "/peers": "GET - Connected peers",
-            "/resonance": "GET - Network resonance stats",
+            "/peers": "GET - Connected peers with health metrics",
+            "/peers/register": "POST - Register peer for auto-reconnect {peer_id, url}",
+            "/resonance": "GET - Network resonance stats with adaptive strength",
             "/signal": "POST - Send signal {id, value}",
             "/stimulate": "POST - Stimulate system {activity}",
             "/ws": "GET - WebSocket real-time stream",
@@ -390,7 +398,14 @@ async fn get_peers(State(state): State<AppState>) -> Json<serde_json::Value> {
                 "cells": peer.cells,
                 "generation": peer.generation,
                 "load": peer.load,
-                "alive": peer.is_alive(15000)
+                "alive": peer.is_alive(15000),
+                "health": {
+                    "quality": peer.health.quality,
+                    "failures": peer.health.failures,
+                    "successes": peer.health.successes,
+                    "failure_rate": peer.health.failure_rate(),
+                    "is_healthy": peer.health.is_healthy()
+                }
             })
         })
         .collect();
@@ -399,6 +414,31 @@ async fn get_peers(State(state): State<AppState>) -> Json<serde_json::Value> {
         "node_id": state.mesh.id,
         "peer_count": state.mesh.get_peer_count(),
         "peers": peers_json
+    }))
+}
+
+/// Зарегистрировать peer для автоматического переподключения
+#[derive(Deserialize)]
+struct RegisterPeerRequest {
+    peer_id: String,
+    url: String,
+}
+
+async fn register_peer(
+    State(state): State<AppState>,
+    Json(req): Json<RegisterPeerRequest>,
+) -> Json<serde_json::Value> {
+    state.mesh.register_peer(req.peer_id.clone(), req.url.clone());
+
+    // Попытаться подключиться сразу
+    let mesh = state.mesh.clone();
+    tokio::spawn(async move {
+        mesh.attempt_connect_to_peer(req.peer_id, req.url).await;
+    });
+
+    Json(serde_json::json!({
+        "status": "ok",
+        "message": "Peer registered and connection initiated"
     }))
 }
 
@@ -430,8 +470,11 @@ async fn mesh_resonance_sync(stem: Arc<Mutex<StemProcessor>>, mesh: Arc<MeshNode
             let mut stem = stem.lock().unwrap();
             let current_load = stem.load;
 
-            // Вычисляем корректировку с силой 0.1 (10% коррекции)
-            let correction = mesh.compute_resonance_correction(current_load, 0.1);
+            // Вычисляем адаптивную силу на основе здоровья сети (0.05-0.2)
+            let strength = mesh.compute_adaptive_strength();
+
+            // Вычисляем корректировку с адаптивной силой
+            let correction = mesh.compute_resonance_correction(current_load, strength);
 
             // Применяем корректировку
             stem.load = (stem.load + correction).max(0.0).min(1.0);
@@ -447,11 +490,13 @@ async fn get_resonance(State(state): State<AppState>) -> Json<serde_json::Value>
     };
 
     let stats = state.mesh.get_resonance_stats(current_load);
+    let adaptive_strength = state.mesh.compute_adaptive_strength();
 
     Json(serde_json::json!({
         "node_id": state.mesh.id,
         "current_load": current_load,
         "resonance": stats.resonance,
+        "adaptive_strength": adaptive_strength,
         "peer_count": stats.peer_count,
         "network": {
             "avg_load": stats.avg_load,
