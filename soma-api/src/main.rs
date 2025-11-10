@@ -10,6 +10,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use soma_bridge::Signal as BridgeSignal;
 use soma_core::{CellRole, StemProcessor};
+use soma_conscious::{ConsciousState, CausalTrace, ReflectionAnalyzer, FeedbackController};
 use std::{
     env,
     net::SocketAddr,
@@ -27,6 +28,7 @@ struct AppState {
     stem: Arc<Mutex<StemProcessor>>,
     signal_tx: broadcast::Sender<ApiSignal>,
     mesh: Arc<MeshNode>,
+    conscious: Arc<Mutex<ConsciousState>>,
 }
 
 /// API-представление сигнала
@@ -92,11 +94,13 @@ async fn main() {
     let stem = Arc::new(Mutex::new(StemProcessor::new()));
     let (signal_tx, _) = broadcast::channel::<ApiSignal>(100);
     let mesh = Arc::new(MeshNode::new(&node_id));
+    let conscious = Arc::new(Mutex::new(ConsciousState::new()));
 
     let state = AppState {
         stem: stem.clone(),
         signal_tx: signal_tx.clone(),
         mesh: mesh.clone(),
+        conscious: conscious.clone(),
     };
 
     // Построение роутера
@@ -116,6 +120,11 @@ async fn main() {
         .route("/mesh/links/tune", post(tune_link))
         .route("/mesh/topology", get(get_topology))
         .route("/mesh/fire", post(fire_event))
+        .route("/conscious/state", get(get_conscious_state))
+        .route("/conscious/traces", get(get_conscious_traces))
+        .route("/conscious/insights", get(get_conscious_insights))
+        .route("/conscious/reflect", post(trigger_reflection))
+        .route("/conscious/health", get(get_conscious_health))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
@@ -142,12 +151,15 @@ async fn main() {
     tokio::spawn(mesh_state_sync(stem.clone(), mesh.clone()));
 
     // Запуск resonance процесса
-    tokio::spawn(mesh_resonance_sync(stem, mesh));
+    tokio::spawn(mesh_resonance_sync(stem.clone(), mesh.clone()));
+
+    // Запуск Conscious Cycle (v1.0)
+    tokio::spawn(conscious_cycle(conscious, mesh, stem));
 
     // Запуск сервера
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     println!("\n╔═══════════════════════════════════════╗");
-    println!("║  🧬 SOMA Hebbian Layer v0.9          ║");
+    println!("║  🧬 SOMA Conscious Layer v1.0        ║");
     println!("╚═══════════════════════════════════════╝\n");
     println!("Node ID: {}", node_id);
     println!("Listening on: http://{}:{}", addr.ip(), port);
@@ -163,6 +175,11 @@ async fn main() {
     println!("  POST /mesh/links/tune - Tune link weight");
     println!("  GET  /mesh/topology - Top N strongest links");
     println!("  POST /mesh/fire     - Trigger fire event");
+    println!("  GET  /conscious/state - Conscious state and attention map");
+    println!("  GET  /conscious/traces - Causal traces (recent)");
+    println!("  GET  /conscious/insights - Generated insights");
+    println!("  POST /conscious/reflect - Trigger reflection cycle");
+    println!("  GET  /conscious/health - Consciousness metrics");
     println!("  POST /signal        - Send signal");
     println!("  POST /stimulate     - Stimulate system");
     println!("  GET  /ws            - WebSocket stream");
@@ -175,12 +192,18 @@ async fn main() {
 
 /// Корневой эндпоинт - информация об API
 async fn root(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let conscious_state = state.conscious.lock().unwrap();
     Json(serde_json::json!({
-        "name": "SOMA Hebbian Layer",
-        "version": "0.9.0",
-        "description": "Self-Organizing Modular Architecture - Hebbian Learning Mesh",
+        "name": "SOMA Conscious Layer",
+        "version": "1.0.0",
+        "description": "Self-Organizing Modular Architecture - Conscious Self-Aware Network",
         "node_id": state.mesh.id,
         "peer_count": state.mesh.get_peer_count(),
+        "consciousness": {
+            "cycle_count": conscious_state.cycle_count,
+            "traces_count": conscious_state.traces_count(),
+            "insights_count": conscious_state.insights_count(),
+        },
         "endpoints": {
             "/": "API information",
             "/state": "GET - System state",
@@ -593,4 +616,162 @@ async fn fire_event(State(state): State<AppState>) -> Json<serde_json::Value> {
         "node_id": state.mesh.id,
         "message": "Fire event sent to all peers"
     }))
+}
+
+// Conscious API Handlers (v1.0)
+
+/// GET /conscious/state - Текущее состояние осознанности
+async fn get_conscious_state(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let conscious = state.conscious.lock().unwrap();
+    let attention_map = conscious.get_attention_map();
+
+    Json(serde_json::json!({
+        "node_id": state.mesh.id,
+        "cycle_count": conscious.cycle_count,
+        "last_cycle_ms": conscious.last_cycle,
+        "traces_count": conscious.traces_count(),
+        "insights_count": conscious.insights_count(),
+        "attention_map": {
+            "top_nodes": attention_map.top_nodes,
+            "updated_at": attention_map.updated_at
+        }
+    }))
+}
+
+/// GET /conscious/traces - Получить последние причинные цепи
+async fn get_conscious_traces(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let conscious = state.conscious.lock().unwrap();
+    let traces = conscious.get_traces(50); // Последние 50
+
+    Json(serde_json::json!({
+        "node_id": state.mesh.id,
+        "traces": traces,
+        "count": traces.len()
+    }))
+}
+
+/// GET /conscious/insights - Получить сгенерированные инсайты
+async fn get_conscious_insights(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let conscious = state.conscious.lock().unwrap();
+    let insights = conscious.get_insights(20); // Последние 20
+
+    Json(serde_json::json!({
+        "node_id": state.mesh.id,
+        "insights": insights,
+        "count": insights.len()
+    }))
+}
+
+/// POST /conscious/reflect - Триггер немедленной рефлексии
+async fn trigger_reflection(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let mut conscious = state.conscious.lock().unwrap();
+
+    // Запуск анализа
+    let analyzer = ReflectionAnalyzer::new();
+    let insights = analyzer.analyze(&conscious, 60000); // Окно 60 секунд
+
+    // Добавить инсайты
+    for insight in &insights {
+        conscious.add_insight(insight.clone());
+    }
+
+    Json(serde_json::json!({
+        "status": "ok",
+        "node_id": state.mesh.id,
+        "insights_generated": insights.len(),
+        "insights": insights
+    }))
+}
+
+/// GET /conscious/health - Метрики осознанности
+async fn get_conscious_health(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let conscious = state.conscious.lock().unwrap();
+
+    // Вычисляем метрики здоровья
+    let traces_rate = if conscious.cycle_count > 0 {
+        conscious.traces_count() as f64 / conscious.cycle_count as f64
+    } else {
+        0.0
+    };
+
+    let insights_rate = if conscious.cycle_count > 0 {
+        conscious.insights_count() as f64 / conscious.cycle_count as f64
+    } else {
+        0.0
+    };
+
+    Json(serde_json::json!({
+        "node_id": state.mesh.id,
+        "cycle_count": conscious.cycle_count,
+        "traces_per_cycle": traces_rate,
+        "insights_per_cycle": insights_rate,
+        "health_status": if traces_rate > 0.5 { "active" } else { "quiet" }
+    }))
+}
+
+/// Conscious Cycle - observe → record → analyze → generate → apply
+async fn conscious_cycle(
+    conscious: Arc<Mutex<ConsciousState>>,
+    mesh: Arc<MeshNode>,
+    _stem: Arc<Mutex<StemProcessor>>,
+) {
+    use tokio::time::{interval, Duration};
+
+    let mut tick = interval(Duration::from_secs(5)); // Каждые 5 секунд
+    let analyzer = ReflectionAnalyzer::new();
+    let feedback = FeedbackController::new();
+
+    loop {
+        tick.tick().await;
+
+        // OBSERVE: Наблюдаем за состоянием mesh
+        let link_weights = mesh.get_link_weights();
+
+        // RECORD: Записываем причинные цепи
+        {
+            let mut state = conscious.lock().unwrap();
+
+            // Для каждого изменения веса создаём trace
+            for (peer_id, weight, quality) in &link_weights {
+                if *weight != 0.3 { // Изменён от дефолта
+                    let trace = CausalTrace::new(
+                        format!("network_activity"),
+                        format!("{}_weight_{:.3}", peer_id, weight),
+                        weight - 0.3,
+                    );
+                    state.record_trace(trace);
+                }
+            }
+        }
+
+        // ANALYZE: Анализируем паттерны (окно 60 секунд)
+        let insights = {
+            let state = conscious.lock().unwrap();
+            analyzer.analyze(&state, 60000)
+        };
+
+        // GENERATE: Генерируем инсайты
+        {
+            let mut state = conscious.lock().unwrap();
+            for insight in &insights {
+                state.add_insight(insight.clone());
+                println!("💭 Insight: {} ({})", insight.insight, insight.category);
+            }
+        }
+
+        // APPLY: Применяем feedback
+        let actions = feedback.generate_actions(&insights);
+        if !actions.is_empty() {
+            println!("🔧 Feedback: {} actions generated", actions.len());
+            for action in &actions {
+                println!("   → {:?}: {} = {:.3}", action.action_type, action.target, action.value);
+            }
+        }
+
+        // Завершаем цикл
+        {
+            let mut state = conscious.lock().unwrap();
+            state.complete_cycle();
+        }
+    }
 }

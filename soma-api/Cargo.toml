@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 soma-core = { path = "../soma-core" }
 soma-bridge = { path = "../soma-bridge" }
+soma-conscious = { path = "../soma-conscious" }
 axum = { version = "0.7", features = ["ws"] }
 tokio.workspace = true
 serde.workspace = true

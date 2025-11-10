@@ -2,7 +2,7 @@
 
 Дорожная карта развития SOMA от живого организма к эволюционирующей экосистеме.
 
-## ✅ Completed (v0.1-0.9)
+## ✅ Completed (v0.1-1.0)
 
 - **v0.1 Skeleton** - Организационный каркас
 - **v0.2 Pulse** - Временная динамика, живой пульс
@@ -13,6 +13,7 @@
 - **v0.7 Resonance Mesh** - Синхронизация нагрузки через резонанс
 - **v0.8 Self-Healing** - Автоматическое восстановление, адаптивный резонанс, отслеживание здоровья
 - **v0.9 Hebbian Learning** - Обучение связей по правилу Хебба, weight-based routing, co-fire/anti-fire/decay
+- **v1.0 Conscious Layer** - Self-awareness: CausalTrace, Reflection, Insights, Feedback, Conscious Cycle
 
 ---
 
@@ -20,7 +21,7 @@
 
 ---
 
-### v1.0 Network Topology - Сеть вместо пар
+### v1.1 Network Topology - Сеть вместо пар
 
 **Концепция:** Множество нейронов с топологией связей.
 
@@ -213,4 +214,4 @@ pub struct EvolutionEngine {
 ---
 
 **Обновлено:** 2025-01-10
-**Версия:** SOMA v0.9 Hebbian Layer
+**Версия:** SOMA v1.0 Conscious Layer
