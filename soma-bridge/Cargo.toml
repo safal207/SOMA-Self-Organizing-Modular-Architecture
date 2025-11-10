@@ -1,0 +1,16 @@
+[package]
+name = "soma-bridge"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+soma-core = { path = "../soma-core" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait = "0.1"
+
+[lib]
+path = "src/lib.rs"
