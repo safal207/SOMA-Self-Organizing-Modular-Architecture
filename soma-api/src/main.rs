@@ -112,6 +112,10 @@ async fn main() {
         .route("/peers", get(get_peers))
         .route("/peers/register", post(register_peer))
         .route("/resonance", get(get_resonance))
+        .route("/mesh/links", get(get_links))
+        .route("/mesh/links/tune", post(tune_link))
+        .route("/mesh/topology", get(get_topology))
+        .route("/mesh/fire", post(fire_event))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
@@ -143,7 +147,7 @@ async fn main() {
     // Запуск сервера
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     println!("\n╔═══════════════════════════════════════╗");
-    println!("║  🧬 SOMA Self-Healing Mesh v0.8      ║");
+    println!("║  🧬 SOMA Hebbian Layer v0.9          ║");
     println!("╚═══════════════════════════════════════╝\n");
     println!("Node ID: {}", node_id);
     println!("Listening on: http://{}:{}", addr.ip(), port);
@@ -155,6 +159,10 @@ async fn main() {
     println!("  GET  /peers         - Connected peers (with health)");
     println!("  POST /peers/register - Register peer for auto-reconnect");
     println!("  GET  /resonance     - Network resonance stats");
+    println!("  GET  /mesh/links    - Link weights and metrics");
+    println!("  POST /mesh/links/tune - Tune link weight");
+    println!("  GET  /mesh/topology - Top N strongest links");
+    println!("  POST /mesh/fire     - Trigger fire event");
     println!("  POST /signal        - Send signal");
     println!("  POST /stimulate     - Stimulate system");
     println!("  GET  /ws            - WebSocket stream");
@@ -168,9 +176,9 @@ async fn main() {
 /// Корневой эндпоинт - информация об API
 async fn root(State(state): State<AppState>) -> Json<serde_json::Value> {
     Json(serde_json::json!({
-        "name": "SOMA Self-Healing Mesh",
-        "version": "0.8.0",
-        "description": "Self-Organizing Modular Architecture - Self-Healing Node Mesh",
+        "name": "SOMA Hebbian Layer",
+        "version": "0.9.0",
+        "description": "Self-Organizing Modular Architecture - Hebbian Learning Mesh",
         "node_id": state.mesh.id,
         "peer_count": state.mesh.get_peer_count(),
         "endpoints": {
@@ -504,5 +512,85 @@ async fn get_resonance(State(state): State<AppState>) -> Json<serde_json::Value>
             "max_load": stats.max_load,
             "variance": stats.variance
         }
+    }))
+}
+
+// Hebbian Learning API Handlers (v0.9)
+
+/// GET /mesh/links - Получить все веса связей с метриками
+async fn get_links(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let links = state.mesh.get_link_weights();
+
+    let links_json: Vec<serde_json::Value> = links
+        .into_iter()
+        .map(|(peer_id, weight, quality)| {
+            serde_json::json!({
+                "peer_id": peer_id,
+                "weight": weight,
+                "health_quality": quality,
+                "score": weight * quality
+            })
+        })
+        .collect();
+
+    Json(serde_json::json!({
+        "node_id": state.mesh.id,
+        "links": links_json,
+        "count": links_json.len()
+    }))
+}
+
+#[derive(Deserialize)]
+struct TuneLinkRequest {
+    peer_id: String,
+    weight: f64,
+}
+
+/// POST /mesh/links/tune - Ручная подстройка веса связи
+async fn tune_link(
+    State(state): State<AppState>,
+    Json(req): Json<TuneLinkRequest>,
+) -> Json<serde_json::Value> {
+    state.mesh.set_link_weight(&req.peer_id, req.weight);
+
+    Json(serde_json::json!({
+        "status": "ok",
+        "peer_id": req.peer_id,
+        "new_weight": req.weight,
+        "message": "Link weight updated"
+    }))
+}
+
+/// GET /mesh/topology - Получить топ-N самых сильных связей
+async fn get_topology(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let top_links = state.mesh.get_top_links(10); // Топ-10 связей
+
+    let topology: Vec<serde_json::Value> = top_links
+        .into_iter()
+        .map(|(peer_id, weight, quality)| {
+            serde_json::json!({
+                "peer_id": peer_id,
+                "weight": weight,
+                "health_quality": quality,
+                "score": weight * quality
+            })
+        })
+        .collect();
+
+    Json(serde_json::json!({
+        "node_id": state.mesh.id,
+        "top_links": topology,
+        "count": topology.len()
+    }))
+}
+
+/// POST /mesh/fire - Триггер Fire события
+async fn fire_event(State(state): State<AppState>) -> Json<serde_json::Value> {
+    state.mesh.send_fire();
+
+    Json(serde_json::json!({
+        "status": "ok",
+        "node_id": state.mesh.id,
+        "message": "Fire event sent to all peers"
     }))
 }
