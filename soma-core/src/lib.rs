@@ -7,11 +7,14 @@
 //!
 //! - **Cell**: Базовая единица обработки (Sense-Align-Flow)
 //! - **StemCell**: Универсальная клетка для дифференциации
+//! - **StemProcessor**: Стволовой процессор для порождения новых клеток
 //! - **Resonance**: Механизм синхронизации и передачи состояния
 
 pub mod cell;
+pub mod stem;
 
 pub use cell::{Cell, StemCell};
+pub use stem::{CellInfo, CellRole, StemProcessor};
 
 /// Версия протокола SOMA
 pub const SOMA_VERSION: &str = "0.1.0";
