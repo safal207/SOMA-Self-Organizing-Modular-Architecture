@@ -71,45 +71,29 @@ impl MetricSnapshot {
     pub fn to_prometheus(&self) -> String {
         let mut output = String::new();
 
-        output.push_str(&format!(
-            "# HELP cognitive_overlap_avg Average semantic overlap between nodes\n"
-        ));
-        output.push_str(&format!(
-            "# TYPE cognitive_overlap_avg gauge\n"
-        ));
+        output.push_str("# HELP cognitive_overlap_avg Average semantic overlap between nodes\n");
+        output.push_str("# TYPE cognitive_overlap_avg gauge\n");
         output.push_str(&format!(
             "cognitive_overlap_avg {}\n",
             self.cognitive_overlap_avg
         ));
 
-        output.push_str(&format!(
-            "# HELP clusters_active_total Number of active cognitive clusters\n"
-        ));
-        output.push_str(&format!(
-            "# TYPE clusters_active_total gauge\n"
-        ));
+        output.push_str("# HELP clusters_active_total Number of active cognitive clusters\n");
+        output.push_str("# TYPE clusters_active_total gauge\n");
         output.push_str(&format!(
             "clusters_active_total {}\n",
             self.clusters_active_total
         ));
 
-        output.push_str(&format!(
-            "# HELP braid_success_rate Success rate of collective inference\n"
-        ));
-        output.push_str(&format!(
-            "# TYPE braid_success_rate gauge\n"
-        ));
+        output.push_str("# HELP braid_success_rate Success rate of collective inference\n");
+        output.push_str("# TYPE braid_success_rate gauge\n");
         output.push_str(&format!(
             "braid_success_rate {}\n",
             self.braid_success_rate
         ));
 
-        output.push_str(&format!(
-            "# HELP self_reflection_latency_ms Network self-reflection latency in milliseconds\n"
-        ));
-        output.push_str(&format!(
-            "# TYPE self_reflection_latency_ms gauge\n"
-        ));
+        output.push_str("# HELP self_reflection_latency_ms Network self-reflection latency in milliseconds\n");
+        output.push_str("# TYPE self_reflection_latency_ms gauge\n");
         output.push_str(&format!(
             "self_reflection_latency_ms {}\n",
             self.self_reflection_latency_ms

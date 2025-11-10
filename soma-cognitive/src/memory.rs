@@ -200,7 +200,7 @@ impl CollectiveMemory {
 
         let events = self.events.read().await;
         let snapshot = serde_json::to_string_pretty(&*events)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            .map_err(std::io::Error::other)?;
 
         let file_path = self.snapshot_dir.join(format!("{}.json", name));
         fs::write(&file_path, snapshot).await?;
@@ -214,7 +214,7 @@ impl CollectiveMemory {
         let content = fs::read_to_string(&file_path).await?;
 
         let loaded_events: Vec<CognitiveEvent> = serde_json::from_str(&content)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            .map_err(std::io::Error::other)?;
 
         let mut events = self.events.write().await;
         *events = loaded_events;
