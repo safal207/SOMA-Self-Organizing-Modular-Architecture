@@ -1,4 +1,5 @@
 use soma_core::Cell;
+use std::time::Instant;
 
 /// Виртуальный нейрон - базовая вычислительная единица SOMA
 ///
@@ -13,6 +14,8 @@ pub struct Neuron {
     decay: f64,
     /// Накопленная память/вес
     weight: f64,
+    /// Время последнего обновления (для временного затухания)
+    last_update: Instant,
 }
 
 impl Neuron {
@@ -23,6 +26,7 @@ impl Neuron {
             threshold: 0.7,
             decay: 0.1,
             weight: 1.0,
+            last_update: Instant::now(),
         }
     }
 
@@ -33,6 +37,7 @@ impl Neuron {
             threshold: threshold.clamp(0.0, 1.0),
             decay: decay.clamp(0.0, 1.0),
             weight: weight.clamp(0.0, 10.0),
+            last_update: Instant::now(),
         }
     }
 
@@ -59,6 +64,34 @@ impl Neuron {
     /// Обучить нейрон (модифицировать вес)
     pub fn train(&mut self, delta: f64) {
         self.weight = (self.weight + delta).clamp(0.0, 10.0);
+    }
+
+    /// Стимулировать нейрон входным сигналом (для pulse-режима)
+    ///
+    /// Возвращает true, если нейрон сработал (fired)
+    pub fn stimulate(&mut self, input: f64) -> bool {
+        self.potential += input;
+        if self.potential >= self.threshold {
+            let fired = true;
+            self.potential = 0.0; // Сброс после активации
+            fired
+        } else {
+            false
+        }
+    }
+
+    /// Применить временное затухание (для pulse-режима)
+    ///
+    /// Учитывает реальное время, прошедшее с последнего обновления
+    pub fn time_based_decay(&mut self) {
+        let elapsed = self.last_update.elapsed().as_secs_f64();
+        self.potential *= (1.0 - self.decay * elapsed).max(0.0);
+        self.last_update = Instant::now();
+    }
+
+    /// Получить нормализованное состояние (0.0 - 1.0)
+    pub fn get_state(&self) -> f64 {
+        self.potential / self.threshold
     }
 }
 

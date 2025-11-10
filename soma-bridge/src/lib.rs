@@ -8,6 +8,7 @@
 //! - **Transport**: Абстракция транспортного слоя
 //! - **Message**: Структура сообщения
 //! - **MessageType**: Типы передаваемых сообщений
+//! - **Signal**: Легковесная структура для передачи значений
 //!
 //! ## Поддерживаемые транспорты
 //!
@@ -36,8 +37,10 @@
 //! }
 //! ```
 
+pub mod signal;
 pub mod transport;
 
+pub use signal::Signal;
 pub use transport::{
     LocalTransport, Message, MessageType, Transport, TransportError,
 };

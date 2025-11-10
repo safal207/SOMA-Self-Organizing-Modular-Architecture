@@ -287,7 +287,8 @@ mod tests {
     #[test]
     fn test_create_bar() {
         let bar = create_bar(0.5, 10);
-        assert_eq!(bar.len(), 10);
+        // Bar состоит из 10 символов (5 filled + 5 empty)
+        assert_eq!(bar.chars().count(), 10);
     }
 
     #[test]
