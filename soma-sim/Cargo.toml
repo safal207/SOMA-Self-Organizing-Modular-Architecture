@@ -21,3 +21,7 @@ path = "src/main.rs"
 [[bin]]
 name = "pulse"
 path = "src/bin/pulse.rs"
+
+[[bin]]
+name = "resonance"
+path = "src/bin/resonance.rs"

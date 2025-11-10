@@ -9,6 +9,7 @@
 //! - **Message**: Структура сообщения
 //! - **MessageType**: Типы передаваемых сообщений
 //! - **Signal**: Легковесная структура для передачи значений
+//! - **Link**: Канал связи между нейронами/узлами
 //!
 //! ## Поддерживаемые транспорты
 //!
@@ -37,9 +38,11 @@
 //! }
 //! ```
 
+pub mod link;
 pub mod signal;
 pub mod transport;
 
+pub use link::Link;
 pub use signal::Signal;
 pub use transport::{
     LocalTransport, Message, MessageType, Transport, TransportError,
