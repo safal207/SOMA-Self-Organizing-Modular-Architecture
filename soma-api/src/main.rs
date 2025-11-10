@@ -110,6 +110,7 @@ async fn main() {
         .route("/ws", get(websocket_handler))
         .route("/mesh", get(mesh_handler))
         .route("/peers", get(get_peers))
+        .route("/resonance", get(get_resonance))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
@@ -128,12 +129,15 @@ async fn main() {
     });
 
     // Запуск state sync процесса
-    tokio::spawn(mesh_state_sync(stem, mesh));
+    tokio::spawn(mesh_state_sync(stem.clone(), mesh.clone()));
+
+    // Запуск resonance процесса
+    tokio::spawn(mesh_resonance_sync(stem, mesh));
 
     // Запуск сервера
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     println!("\n╔═══════════════════════════════════════╗");
-    println!("║  🌐 SOMA Node Mesh v0.6              ║");
+    println!("║  🌊 SOMA Resonance Mesh v0.7         ║");
     println!("╚═══════════════════════════════════════╝\n");
     println!("Node ID: {}", node_id);
     println!("Listening on: http://{}:{}", addr.ip(), port);
@@ -143,6 +147,7 @@ async fn main() {
     println!("  GET  /cells         - List all cells");
     println!("  GET  /distribution  - Role distribution");
     println!("  GET  /peers         - Connected peers");
+    println!("  GET  /resonance     - Network resonance stats");
     println!("  POST /signal        - Send signal");
     println!("  POST /stimulate     - Stimulate system");
     println!("  GET  /ws            - WebSocket stream");
@@ -156,8 +161,8 @@ async fn main() {
 /// Корневой эндпоинт - информация об API
 async fn root(State(state): State<AppState>) -> Json<serde_json::Value> {
     Json(serde_json::json!({
-        "name": "SOMA Node Mesh",
-        "version": "0.6.0",
+        "name": "SOMA Resonance Mesh",
+        "version": "0.7.0",
         "description": "Self-Organizing Modular Architecture - Node Mesh",
         "node_id": state.mesh.id,
         "peer_count": state.mesh.get_peer_count(),
@@ -167,6 +172,7 @@ async fn root(State(state): State<AppState>) -> Json<serde_json::Value> {
             "/cells": "GET - List all cells",
             "/distribution": "GET - Role distribution",
             "/peers": "GET - Connected peers",
+            "/resonance": "GET - Network resonance stats",
             "/signal": "POST - Send signal {id, value}",
             "/stimulate": "POST - Stimulate system {activity}",
             "/ws": "GET - WebSocket real-time stream",
@@ -410,4 +416,48 @@ async fn mesh_state_sync(stem: Arc<Mutex<StemProcessor>>, mesh: Arc<MeshNode>) {
 
         mesh.broadcast_state(cells, generation, load);
     }
+}
+
+/// Фоновая задача применения резонанса
+async fn mesh_resonance_sync(stem: Arc<Mutex<StemProcessor>>, mesh: Arc<MeshNode>) {
+    let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
+
+    loop {
+        interval.tick().await;
+
+        // Применяем резонанс только если есть живые peers
+        if mesh.get_peer_count() > 0 {
+            let mut stem = stem.lock().unwrap();
+            let current_load = stem.load;
+
+            // Вычисляем корректировку с силой 0.1 (10% коррекции)
+            let correction = mesh.compute_resonance_correction(current_load, 0.1);
+
+            // Применяем корректировку
+            stem.load = (stem.load + correction).max(0.0).min(1.0);
+        }
+    }
+}
+
+/// Получить статистику резонанса сети
+async fn get_resonance(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let current_load = {
+        let stem = state.stem.lock().unwrap();
+        stem.load
+    };
+
+    let stats = state.mesh.get_resonance_stats(current_load);
+
+    Json(serde_json::json!({
+        "node_id": state.mesh.id,
+        "current_load": current_load,
+        "resonance": stats.resonance,
+        "peer_count": stats.peer_count,
+        "network": {
+            "avg_load": stats.avg_load,
+            "min_load": stats.min_load,
+            "max_load": stats.max_load,
+            "variance": stats.variance
+        }
+    }))
 }
