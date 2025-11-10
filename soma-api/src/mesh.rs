@@ -85,6 +85,10 @@ pub enum MeshMessage {
         load: f64,
         timestamp: i64,
     },
+    Fire {
+        node_id: String,
+        timestamp: i64,
+    },
     Ack {
         node_id: String,
         ack_to: String,
@@ -102,6 +106,16 @@ pub struct PeerInfo {
     pub health: ConnectionHealth,
     pub url: Option<String>, // URL для переподключения
     pub connected: bool,      // Активно ли соединение
+
+    // Hebbian Learning (v0.9)
+    pub weight: f64,          // Вес связи (w_min..w_max)
+    pub w_min: f64,
+    pub w_max: f64,
+    pub eta_pos: f64,         // Скорость обучения при совпадении
+    pub eta_neg: f64,         // Скорость наказания при рассинхроне
+    pub decay: f64,           // Скорость забывания (сек^-1)
+    pub last_fire_local: i64,  // Время последней вспышки локального узла (ms)
+    pub last_fire_remote: i64, // Время последней вспышки удаленного peer (ms)
 }
 
 impl PeerInfo {
@@ -115,6 +129,15 @@ impl PeerInfo {
             health: ConnectionHealth::new(),
             url: None,
             connected: true,
+            // Hebbian defaults
+            weight: 0.3,
+            w_min: 0.1,
+            w_max: 1.0,
+            eta_pos: 0.06,
+            eta_neg: 0.03,
+            decay: 0.002,
+            last_fire_local: 0,
+            last_fire_remote: 0,
         }
     }
 
@@ -128,6 +151,15 @@ impl PeerInfo {
             health: ConnectionHealth::new(),
             url: Some(url),
             connected: false,
+            // Hebbian defaults
+            weight: 0.3,
+            w_min: 0.1,
+            w_max: 1.0,
+            eta_pos: 0.06,
+            eta_neg: 0.03,
+            decay: 0.002,
+            last_fire_local: 0,
+            last_fire_remote: 0,
         }
     }
 
@@ -151,6 +183,58 @@ impl PeerInfo {
     pub fn is_alive(&self, timeout_ms: i64) -> bool {
         let now = Utc::now().timestamp_millis();
         (now - self.last_seen) < timeout_ms
+    }
+
+    // Hebbian Learning методы (v0.9)
+
+    /// Записать локальную вспышку (от нашего узла)
+    pub fn note_fire_local(&mut self, ts_ms: i64) {
+        self.last_fire_local = ts_ms;
+    }
+
+    /// Записать удаленную вспышку (от peer)
+    pub fn note_fire_remote(&mut self, ts_ms: i64) {
+        self.last_fire_remote = ts_ms;
+    }
+
+    /// Обновление веса по правилу Хебба
+    /// window_ms - окно совпадения вспышек (обычно 120мс)
+    pub fn hebbian_update(&mut self, window_ms: i64) {
+        // Забывание (decay со временем)
+        let dt = window_ms as f64 / 1000.0;
+        self.weight *= (1.0 - self.decay * dt).clamp(0.0, 1.0);
+
+        // Проверяем совпадение вспышек
+        if self.last_fire_local > 0 && self.last_fire_remote > 0 {
+            let cofire = (self.last_fire_local - self.last_fire_remote).abs() <= window_ms;
+
+            if cofire {
+                // Co-fire: усиление связи
+                self.weight += self.eta_pos * (self.w_max - self.weight);
+            } else {
+                // Anti-fire: ослабление связи
+                self.weight -= self.eta_neg * (self.weight - self.w_min);
+            }
+        }
+
+        // Клипим вес в допустимых границах
+        self.weight = self.weight.clamp(self.w_min, self.w_max);
+    }
+
+    /// Вычислить score для роутинга (чем выше - тем приоритетнее канал)
+    /// intent_match - насколько задача подходит для этого канала (0.0-1.0)
+    pub fn score(&self, intent_match: f64) -> f64 {
+        self.weight * self.health.quality * intent_match
+    }
+
+    /// Снапшот веса для персистентности
+    pub fn snapshot_weight(&self) -> (String, f64) {
+        (self.id.clone(), self.weight)
+    }
+
+    /// Загрузить вес из снапшота
+    pub fn load_weight(&mut self, w: f64) {
+        self.weight = w.clamp(self.w_min, self.w_max);
     }
 }
 
@@ -240,6 +324,15 @@ impl MeshNode {
                                     peer.update_state(*cells, *generation, *load);
                                     println!("📊 State sync from {}: {} cells, gen {}, load {:.2}",
                                              peer_id, cells, generation, load);
+                                }
+                            }
+                            MeshMessage::Fire { node_id: peer_id, timestamp } => {
+                                let mut peers_map = peers.lock().unwrap();
+                                if let Some(peer) = peers_map.get_mut(peer_id) {
+                                    peer.note_fire_remote(*timestamp);
+                                    // Применяем hebbian update с окном 120мс
+                                    peer.hebbian_update(120);
+                                    println!("🔥 Fire from {}: ts={}, weight={:.3}", peer_id, timestamp, peer.weight);
                                 }
                             }
                             MeshMessage::Ack { ack_to, .. } => {
@@ -538,6 +631,80 @@ impl MeshNode {
                 }
 
                 false
+            }
+        }
+    }
+
+    // Hebbian Learning методы (v0.9)
+
+    /// Отправить Fire событие всем peers
+    pub fn send_fire(&self) {
+        let now = Utc::now().timestamp_millis();
+        let msg = MeshMessage::Fire {
+            node_id: self.id.clone(),
+            timestamp: now,
+        };
+        self.send_message(msg);
+
+        // Регистрируем локальную вспышку для всех peers
+        let mut peers = self.peers.lock().unwrap();
+        for peer in peers.values_mut() {
+            peer.note_fire_local(now);
+        }
+    }
+
+    /// Выбрать лучший peer для роутинга по весам
+    /// intent_match - насколько задача подходит для канала (0.0-1.0)
+    pub fn pick_best_peer(&self, intent_match: f64) -> Option<String> {
+        let peers = self.peers.lock().unwrap();
+
+        peers.values()
+            .filter(|p| p.connected && p.is_alive(15000))
+            .max_by(|a, b| {
+                let score_a = a.score(intent_match);
+                let score_b = b.score(intent_match);
+                score_a.partial_cmp(&score_b).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|p| p.id.clone())
+    }
+
+    /// Получить все веса связей (для API)
+    pub fn get_link_weights(&self) -> Vec<(String, f64, f64)> {
+        let peers = self.peers.lock().unwrap();
+        peers.values()
+            .map(|p| (p.id.clone(), p.weight, p.health.quality))
+            .collect()
+    }
+
+    /// Установить вес связи (для API /mesh/links/tune)
+    pub fn set_link_weight(&self, peer_id: &str, weight: f64) {
+        let mut peers = self.peers.lock().unwrap();
+        if let Some(peer) = peers.get_mut(peer_id) {
+            peer.load_weight(weight);
+        }
+    }
+
+    /// Получить топ-N самых сильных связей
+    pub fn get_top_links(&self, n: usize) -> Vec<(String, f64, f64)> {
+        let mut weights = self.get_link_weights();
+        weights.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        weights.into_iter().take(n).collect()
+    }
+
+    /// Сохранить снапшот весов (для персистентности)
+    pub fn snapshot_weights(&self) -> Vec<(String, f64)> {
+        let peers = self.peers.lock().unwrap();
+        peers.values()
+            .map(|p| p.snapshot_weight())
+            .collect()
+    }
+
+    /// Загрузить веса из снапшота
+    pub fn load_weights(&self, weights: Vec<(String, f64)>) {
+        let mut peers = self.peers.lock().unwrap();
+        for (peer_id, weight) in weights {
+            if let Some(peer) = peers.get_mut(&peer_id) {
+                peer.load_weight(weight);
             }
         }
     }
