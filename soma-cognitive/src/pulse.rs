@@ -2,7 +2,10 @@
 //!
 //! Узлы раз в T секунд публикуют короткий пакет смысла.
 //! Соседи вычисляют semantic overlap и усиливают связи при совпадении.
+//!
+//! v1.2: Добавлена поддержка embedding-based semantic similarity
 
+use crate::embeddings::{cosine_similarity, IntentEmbeddings};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::time::{interval, Duration};
@@ -37,9 +40,11 @@ impl Intent {
         }
     }
 
-    /// Вычислить семантическое совпадение с другим намерением
+    /// Вычислить семантическое совпадение с другим намерением (DEPRECATED)
     /// Простая эвристика: точное совпадение = 1.0, разное = 0.0
-    /// В будущем можно заменить на embedding-based similarity
+    ///
+    /// **DEPRECATED**: Используйте `similarity_embedding()` для более точного анализа
+    #[deprecated(since = "1.2.0", note = "use similarity_embedding() instead")]
     pub fn similarity(&self, other: &Intent) -> f64 {
         if self == other {
             1.0
@@ -53,6 +58,14 @@ impl Intent {
                 _ => 0.0,
             }
         }
+    }
+
+    /// Вычислить семантическое совпадение используя embeddings (v1.2)
+    /// Возвращает cosine similarity между embedding-векторами намерений
+    pub fn similarity_embedding(&self, other: &Intent, embeddings: &IntentEmbeddings) -> f64 {
+        let emb_self = embeddings.get_embedding(self);
+        let emb_other = embeddings.get_embedding(other);
+        cosine_similarity(&emb_self, &emb_other) as f64
     }
 
     /// Создать список контекстных тегов для намерения
@@ -113,9 +126,13 @@ impl CognitivePulse {
         self
     }
 
-    /// Вычислить семантическое перекрытие с другим пульсом
+    /// Вычислить семантическое перекрытие с другим пульсом (DEPRECATED)
+    ///
+    /// **DEPRECATED**: Используйте `semantic_overlap_embedding()` для embedding-based анализа
+    #[deprecated(since = "1.2.0", note = "use semantic_overlap_embedding() instead")]
     pub fn semantic_overlap(&self, other: &CognitivePulse) -> f64 {
         // Базовая similarity между намерениями
+        #[allow(deprecated)]
         let intent_sim = self.intent.similarity(&other.intent);
 
         // Similarity на основе контекстных тегов (Jaccard index)
@@ -123,6 +140,18 @@ impl CognitivePulse {
 
         // Взвешенная комбинация (intent важнее)
         0.7 * intent_sim + 0.3 * context_sim
+    }
+
+    /// Вычислить семантическое перекрытие используя embeddings (v1.2)
+    pub fn semantic_overlap_embedding(&self, other: &CognitivePulse, embeddings: &IntentEmbeddings) -> f64 {
+        // Embedding-based similarity между намерениями
+        let intent_sim = self.intent.similarity_embedding(&other.intent, embeddings);
+
+        // Similarity на основе контекстных тегов (Jaccard index)
+        let context_sim = self.context_jaccard(&other.context);
+
+        // Взвешенная комбинация (intent важнее, так как использует embeddings)
+        0.8 * intent_sim + 0.2 * context_sim
     }
 
     /// Вычислить Jaccard similarity для контекстных тегов
