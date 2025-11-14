@@ -1,4 +1,4 @@
-//! # SOMA Cognitive - Cognitive Mesh Layer v1.2
+//! # SOMA Cognitive - Cognitive Mesh Layer v1.3
 //!
 //! Слой когнитивного резонанса: узлы не просто обмениваются данными,
 //! а синхронизируют намерения и гипотезы, образуя коллективный интеллект.
@@ -10,21 +10,24 @@
 //! - **Metrics**: Metametric Layer - метрики когнитивной активности
 //! - **Memory**: Collective Memory - лог когнитивных событий
 //! - **Embeddings**: Semantic Embeddings - векторное представление намерений (v1.2)
+//! - **Consensus**: Distributed Consensus - голосование и консенсус (v1.3)
 
 pub mod pulse;
 pub mod braid;
 pub mod metrics;
 pub mod memory;
 pub mod embeddings;
+pub mod consensus;
 
 pub use pulse::{CognitivePulse, Intent, pulse};
 pub use braid::{InferenceBraid, Task, BraidResult};
 pub use metrics::{CognitiveMetrics, MetricSnapshot};
 pub use memory::{CollectiveMemory, CognitiveEvent};
 pub use embeddings::{IntentEmbeddings, cosine_similarity, SemanticClusterer};
+pub use consensus::{ConsensusManager, ConsensusRound, ConsensusResult, NodeVote, Vote, ByzantineDetector};
 
 /// Версия Cognitive Mesh
-pub const COGNITIVE_MESH_VERSION: &str = "1.2.0";
+pub const COGNITIVE_MESH_VERSION: &str = "1.3.0";
 
 /// Порог семантического совпадения для формирования когнитивных кластеров
 pub const SEMANTIC_THRESHOLD: f64 = 0.7;
@@ -35,7 +38,7 @@ mod tests {
 
     #[test]
     fn test_version() {
-        assert_eq!(COGNITIVE_MESH_VERSION, "1.2.0");
+        assert_eq!(COGNITIVE_MESH_VERSION, "1.3.0");
     }
 
     #[test]

@@ -1,12 +1,21 @@
-# SOMA Cognitive Mesh v1.2
+# SOMA Cognitive Mesh v1.3
 
 > **«Каждая клетка чувствует не только себя, но и мысль соседей»**
 
 Cognitive Mesh — это слой когнитивного резонанса для SOMA архитектуры, где узлы не просто обмениваются данными, а синхронизируют намерения и гипотезы, образуя коллективный интеллект.
 
-## 🆕 **v1.2: Semantic Embeddings**
+## 🆕 **v1.3: Distributed Consensus** 🗳️
 
-**Узлы теперь понимают смысл, а не просто сравнивают строки!**
+**Узлы теперь умеют договариваться даже при сбоях!**
+
+- 🗳️ **Voting-based consensus**: голосование за результаты Inference Braid
+- ⚖️ **Weighted voting**: учет confidence как веса голоса
+- 🛡️ **Byzantine Fault Tolerance**: детекция недобросовестных узлов
+- 🎯 **2/3 majority**: порог консенсуса 66% для надежности
+
+## 🌟 **v1.2: Semantic Embeddings**
+
+**Узлы понимают смысл, а не просто сравнивают строки!**
 
 - ✨ **Embedding-based similarity**: векторное представление намерений
 - 🎯 **86.5% улучшение** точности семантического анализа
@@ -105,6 +114,56 @@ let similarity = cosine_similarity(&stabilize_emb, &healing_emb);
 - **Semantic Clustering**: автоматическая группировка по смыслу
 - **Custom Intent**: динамическая генерация embeddings для произвольных намерений
 
+### 6. Distributed Consensus (v1.3) ⭐
+
+Механизм голосования для надежного коллективного принятия решений:
+
+```rust
+use soma_cognitive::{ConsensusManager, NodeVote, Vote};
+
+let consensus = ConsensusManager::new(0.66, 3); // 2/3 majority, min 3 nodes
+
+// Начать раунд голосования
+consensus.start_round("round_001".to_string(), "task_001".to_string()).await?;
+
+// Узлы голосуют
+consensus.submit_vote("round_001",
+    NodeVote::new("node_alpha".to_string(), Vote::Accept, 0.92)
+).await?;
+
+// Вычислить консенсус (weighted by confidence)
+let result = consensus.finalize_round("round_001", true).await?;
+
+match result {
+    ConsensusResult::Accepted { acceptance_rate, .. } => {
+        println!("✅ Принято ({}%)", acceptance_rate * 100.0);
+    }
+    ConsensusResult::Rejected { .. } => println!("❌ Отклонено"),
+    ConsensusResult::NoConsensus { .. } => println!("⚠️  Нет консенсуса"),
+    _ => {}
+}
+```
+
+**Возможности v1.3:**
+- **Voting**: Accept / Reject / Abstain
+- **Weighted consensus**: confidence узлов как вес голоса
+- **Byzantine detection**: детекция непоследовательных узлов (>60% flip rate)
+- **Fault tolerance**: работа при сбоях узлов (минимум 3 узла для консенсуса)
+
+**Интеграция с Inference Braid:**
+```rust
+// 1. Предложить задачу
+let task = Task::new(...);
+braid.propose(task).await?;
+
+// 2. Узлы выполняют и голосуют
+consensus.start_round("braid_round", "task_id").await?;
+consensus.submit_vote("braid_round", NodeVote::new(...)).await?;
+
+// 3. Консенсус определяет финальный результат
+let decision = consensus.finalize_round("braid_round", true).await?;
+```
+
 ## 🧠 Что это даёт
 
 1. **Сеть начинает самоорганизовываться по смыслу**, а не только по нагрузке
@@ -183,8 +242,11 @@ async fn main() {
 # Базовое демо Cognitive Mesh
 cargo run --example cognitive_mesh_demo
 
-# Демо Semantic Embeddings (v1.2) ⭐
+# Демо Semantic Embeddings (v1.2)
 cargo run --example semantic_embeddings_demo
+
+# Демо Distributed Consensus (v1.3) ⭐
+cargo run --example distributed_consensus_demo
 ```
 
 ## 📊 Метрики
