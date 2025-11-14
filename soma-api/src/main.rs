@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use soma_bridge::Signal as BridgeSignal;
 use soma_core::{CellRole, StemProcessor};
 use soma_conscious::{ConsciousState, CausalTrace, ReflectionAnalyzer, FeedbackController};
+use soma_domino::{DominoEngine, DominoInput, DominoIntentKind, PeerCandidate};
 use std::{
     env,
     net::SocketAddr,
@@ -77,6 +78,47 @@ struct DistributionResponse {
     total: usize,
 }
 
+// Domino Engine DTOs
+
+/// Запрос оценки Domino Luck Engine
+#[derive(Debug, Deserialize)]
+struct DominoEvaluateRequest {
+    /// Тип намерения
+    intent_kind: String,
+
+    /// Список кандидатов
+    candidates: Vec<PeerCandidateDto>,
+
+    /// Опциональные контекстные теги
+    #[serde(default)]
+    context_tags: Vec<String>,
+}
+
+/// DTO для PeerCandidate
+#[derive(Debug, Deserialize)]
+struct PeerCandidateDto {
+    peer_id: String,
+    health: f32,
+    quality: f32,
+    intent_match: f32,
+}
+
+/// Ответ Domino Luck Engine
+#[derive(Debug, Serialize)]
+struct DominoEvaluateResponse {
+    /// Отсортированный список лучших пиров
+    best_peers: Vec<String>,
+
+    /// Общая оценка удачи (0.0 - 1.0)
+    luck_score: f32,
+
+    /// Общая оценка сопротивления (0.0 - 1.0)
+    resistance_score: f32,
+
+    /// Человекочитаемое объяснение
+    explanation: String,
+}
+
 #[tokio::main]
 async fn main() {
     // Получить ID узла из переменной окружения или сгенерировать
@@ -120,6 +162,7 @@ async fn main() {
         .route("/mesh/links/tune", post(tune_link))
         .route("/mesh/topology", get(get_topology))
         .route("/mesh/fire", post(fire_event))
+        .route("/domino/evaluate", post(domino_evaluate))
         .route("/conscious/state", get(get_conscious_state))
         .route("/conscious/traces", get(get_conscious_traces))
         .route("/conscious/insights", get(get_conscious_insights))
@@ -175,6 +218,7 @@ async fn main() {
     println!("  POST /mesh/links/tune - Tune link weight");
     println!("  GET  /mesh/topology - Top N strongest links");
     println!("  POST /mesh/fire     - Trigger fire event");
+    println!("  POST /domino/evaluate - Domino Luck Engine evaluation");
     println!("  GET  /conscious/state - Conscious state and attention map");
     println!("  GET  /conscious/traces - Causal traces (recent)");
     println!("  GET  /conscious/insights - Generated insights");
@@ -616,6 +660,47 @@ async fn fire_event(State(state): State<AppState>) -> Json<serde_json::Value> {
         "node_id": state.mesh.id,
         "message": "Fire event sent to all peers"
     }))
+}
+
+// Domino Engine API Handler
+
+/// POST /domino/evaluate - Оценка "удачи" для выбора лучших пиров
+async fn domino_evaluate(
+    Json(req): Json<DominoEvaluateRequest>,
+) -> Json<DominoEvaluateResponse> {
+    // Парсим intent_kind из строки
+    let intent_kind = match req.intent_kind.to_lowercase().as_str() {
+        "routing" => DominoIntentKind::Routing,
+        "task_scheduling" => DominoIntentKind::TaskScheduling,
+        "user_request" => DominoIntentKind::UserRequest,
+        custom => DominoIntentKind::Custom(custom.to_string()),
+    };
+
+    // Конвертируем DTOs в PeerCandidate
+    let candidates: Vec<PeerCandidate> = req
+        .candidates
+        .into_iter()
+        .map(|dto| PeerCandidate {
+            peer_id: dto.peer_id,
+            health: dto.health,
+            quality: dto.quality,
+            intent_match: dto.intent_match,
+        })
+        .collect();
+
+    // Создаём DominoInput
+    let input = DominoInput::new(intent_kind, candidates, req.context_tags);
+
+    // Выполняем оценку
+    let decision = DominoEngine::evaluate(input);
+
+    // Конвертируем в DTO ответа
+    Json(DominoEvaluateResponse {
+        best_peers: decision.best_peers,
+        luck_score: decision.luck_score,
+        resistance_score: decision.resistance_score,
+        explanation: decision.explanation,
+    })
 }
 
 // Conscious API Handlers (v1.0)

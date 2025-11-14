@@ -9,6 +9,7 @@ license.workspace = true
 soma-core = { path = "../soma-core" }
 soma-bridge = { path = "../soma-bridge" }
 soma-conscious = { path = "../soma-conscious" }
+soma-domino = { path = "../soma-domino" }
 axum = { version = "0.7", features = ["ws"] }
 tokio.workspace = true
 serde.workspace = true
