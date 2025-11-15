@@ -10,7 +10,10 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use soma_bridge::Signal as BridgeSignal;
 use soma_core::{CellRole, StemProcessor};
-use soma_conscious::{ConsciousState, CausalTrace, ReflectionAnalyzer, FeedbackController};
+use soma_conscious::{
+    ConsciousState, CausalTrace, ReflectionAnalyzer, FeedbackController,
+    DominoDecisionTrace, DecisionOutcome, DecisionStats,
+};
 use soma_domino::{DominoEngine, DominoInput, DominoIntentKind, PeerCandidate};
 use std::{
     env,
@@ -106,6 +109,9 @@ struct PeerCandidateDto {
 /// Ответ Domino Luck Engine
 #[derive(Debug, Serialize)]
 struct DominoEvaluateResponse {
+    /// Уникальный ID решения (для последующего обновления outcome)
+    decision_id: String,
+
     /// Отсортированный список лучших пиров
     best_peers: Vec<String>,
 
@@ -163,6 +169,11 @@ async fn main() {
         .route("/mesh/topology", get(get_topology))
         .route("/mesh/fire", post(fire_event))
         .route("/domino/evaluate", post(domino_evaluate))
+        .route("/domino/decisions", get(get_domino_decisions))
+        .route("/domino/decisions/recent", get(get_recent_domino_decisions))
+        .route("/domino/decisions/stats", get(get_domino_stats))
+        .route("/domino/decisions/outcome", post(update_decision_outcome))
+        .route("/domino/insights", get(get_domino_insights))
         .route("/conscious/state", get(get_conscious_state))
         .route("/conscious/traces", get(get_conscious_traces))
         .route("/conscious/insights", get(get_conscious_insights))
@@ -219,6 +230,10 @@ async fn main() {
     println!("  GET  /mesh/topology - Top N strongest links");
     println!("  POST /mesh/fire     - Trigger fire event");
     println!("  POST /domino/evaluate - Domino Luck Engine evaluation");
+    println!("  GET  /domino/decisions - All Domino decisions history");
+    println!("  GET  /domino/decisions/recent - Recent Domino decisions (last 50)");
+    println!("  GET  /domino/decisions/stats - Domino decision statistics");
+    println!("  POST /domino/decisions/outcome - Update decision outcome");
     println!("  GET  /conscious/state - Conscious state and attention map");
     println!("  GET  /conscious/traces - Causal traces (recent)");
     println!("  GET  /conscious/insights - Generated insights");
@@ -666,8 +681,17 @@ async fn fire_event(State(state): State<AppState>) -> Json<serde_json::Value> {
 
 /// POST /domino/evaluate - Оценка "удачи" для выбора лучших пиров
 async fn domino_evaluate(
+    State(state): State<AppState>,
     Json(req): Json<DominoEvaluateRequest>,
 ) -> Json<DominoEvaluateResponse> {
+    // Генерируем уникальный ID решения
+    let timestamp = chrono::Utc::now().timestamp_millis();
+    let decision_id = format!(
+        "domino_{}_{}",
+        state.mesh.id,
+        timestamp
+    );
+
     // Парсим intent_kind из строки
     let intent_kind = match req.intent_kind.to_lowercase().as_str() {
         "routing" => DominoIntentKind::Routing,
@@ -679,9 +703,9 @@ async fn domino_evaluate(
     // Конвертируем DTOs в PeerCandidate
     let candidates: Vec<PeerCandidate> = req
         .candidates
-        .into_iter()
+        .iter()
         .map(|dto| PeerCandidate {
-            peer_id: dto.peer_id,
+            peer_id: dto.peer_id.clone(),
             health: dto.health,
             quality: dto.quality,
             intent_match: dto.intent_match,
@@ -689,18 +713,161 @@ async fn domino_evaluate(
         .collect();
 
     // Создаём DominoInput
-    let input = DominoInput::new(intent_kind, candidates, req.context_tags);
+    let input = DominoInput::new(intent_kind.clone(), candidates.clone(), req.context_tags.clone());
 
     // Выполняем оценку
     let decision = DominoEngine::evaluate(input);
 
+    // Создаём trace для Conscious Layer
+    let trace = DominoDecisionTrace::new(
+        decision_id.clone(),
+        chrono::Utc::now().timestamp_millis() as u64,
+        format!("{:?}", intent_kind),
+        req.context_tags,
+        req.candidates.iter().map(|c| c.peer_id.clone()).collect(),
+        decision.best_peers.first().cloned().unwrap_or_default(),
+        decision.luck_score,
+        decision.resistance_score,
+        decision.explanation.clone(),
+        state.mesh.id.clone(),
+    );
+
+    // Записываем решение в Conscious State
+    {
+        let mut conscious = state.conscious.lock().unwrap();
+        conscious.record_decision(trace);
+    }
+
     // Конвертируем в DTO ответа
     Json(DominoEvaluateResponse {
+        decision_id,
         best_peers: decision.best_peers,
         luck_score: decision.luck_score,
         resistance_score: decision.resistance_score,
         explanation: decision.explanation,
     })
+}
+
+/// GET /domino/decisions - Получить все решения
+async fn get_domino_decisions(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let conscious = state.conscious.lock().unwrap();
+    let decisions = conscious.get_decisions();
+
+    Json(serde_json::json!({
+        "node_id": state.mesh.id,
+        "total_decisions": decisions.len(),
+        "decisions": decisions
+    }))
+}
+
+/// GET /domino/decisions/recent?limit=N - Получить последние N решений
+async fn get_recent_domino_decisions(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let conscious = state.conscious.lock().unwrap();
+    let recent = conscious.get_recent_decisions(50); // По умолчанию последние 50
+
+    Json(serde_json::json!({
+        "node_id": state.mesh.id,
+        "count": recent.len(),
+        "decisions": recent
+    }))
+}
+
+/// GET /domino/decisions/stats - Статистика решений
+async fn get_domino_stats(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let conscious = state.conscious.lock().unwrap();
+    let stats = conscious.get_decision_stats();
+
+    Json(serde_json::json!({
+        "node_id": state.mesh.id,
+        "stats": stats
+    }))
+}
+
+/// Request для обновления outcome решения
+#[derive(Deserialize)]
+struct UpdateOutcomeRequest {
+    decision_id: String,
+    outcome_type: String, // "success", "failure", "partial"
+    #[serde(default)]
+    actual_latency_ms: Option<f64>,
+    #[serde(default)]
+    actual_quality: Option<f64>,
+    #[serde(default)]
+    reason: Option<String>,
+    #[serde(default)]
+    completed_ratio: Option<f64>,
+    #[serde(default)]
+    issues: Vec<String>,
+}
+
+/// POST /domino/decisions/outcome - Обновить результат решения
+async fn update_decision_outcome(
+    State(state): State<AppState>,
+    Json(req): Json<UpdateOutcomeRequest>,
+) -> Json<serde_json::Value> {
+    let outcome = match req.outcome_type.as_str() {
+        "success" => DecisionOutcome::Success {
+            actual_latency_ms: req.actual_latency_ms.unwrap_or(0.0),
+            actual_quality: req.actual_quality.unwrap_or(1.0),
+        },
+        "failure" => DecisionOutcome::Failure {
+            reason: req.reason.unwrap_or_else(|| "unknown".to_string()),
+        },
+        "partial" => DecisionOutcome::Partial {
+            completed_ratio: req.completed_ratio.unwrap_or(0.5),
+            issues: req.issues,
+        },
+        _ => {
+            return Json(serde_json::json!({
+                "status": "error",
+                "message": "Invalid outcome_type. Use: success, failure, or partial"
+            }));
+        }
+    };
+
+    let mut conscious = state.conscious.lock().unwrap();
+    let updated = conscious.update_decision_outcome(&req.decision_id, outcome);
+
+    if updated {
+        Json(serde_json::json!({
+            "status": "ok",
+            "decision_id": req.decision_id,
+            "message": "Decision outcome updated"
+        }))
+    } else {
+        Json(serde_json::json!({
+            "status": "error",
+            "message": "Decision ID not found"
+        }))
+    }
+}
+
+/// GET /domino/insights - Dashboard with routing insights and analysis
+async fn get_domino_insights(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let conscious = state.conscious.lock().unwrap();
+
+    // Create analyzer and generate insights
+    let analyzer = ReflectionAnalyzer::new();
+    let insights = analyzer.analyze_routing_decisions(&conscious);
+
+    // Get basic stats for context
+    let stats = conscious.get_decision_stats();
+    let decisions_count = conscious.decisions_count();
+
+    Json(serde_json::json!({
+        "node_id": state.mesh.id,
+        "timestamp": chrono::Utc::now().timestamp_millis(),
+        "total_decisions": decisions_count,
+        "stats": stats,
+        "insights": insights,
+        "insights_count": insights.len(),
+        "categories": {
+            "routing_performance": insights.iter().filter(|i| i.category == "routing_performance").count(),
+            "prediction_accuracy": insights.iter().filter(|i| i.category == "prediction_accuracy").count(),
+            "intent_performance": insights.iter().filter(|i| i.category == "intent_performance").count(),
+            "anomaly": insights.iter().filter(|i| i.category == "anomaly").count(),
+        }
+    }))
 }
 
 // Conscious API Handlers (v1.0)
