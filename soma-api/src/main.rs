@@ -173,6 +173,7 @@ async fn main() {
         .route("/domino/decisions/recent", get(get_recent_domino_decisions))
         .route("/domino/decisions/stats", get(get_domino_stats))
         .route("/domino/decisions/outcome", post(update_decision_outcome))
+        .route("/domino/insights", get(get_domino_insights))
         .route("/conscious/state", get(get_conscious_state))
         .route("/conscious/traces", get(get_conscious_traces))
         .route("/conscious/insights", get(get_conscious_insights))
@@ -839,6 +840,34 @@ async fn update_decision_outcome(
             "message": "Decision ID not found"
         }))
     }
+}
+
+/// GET /domino/insights - Dashboard with routing insights and analysis
+async fn get_domino_insights(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let conscious = state.conscious.lock().unwrap();
+
+    // Create analyzer and generate insights
+    let analyzer = ReflectionAnalyzer::new();
+    let insights = analyzer.analyze_routing_decisions(&conscious);
+
+    // Get basic stats for context
+    let stats = conscious.get_decision_stats();
+    let decisions_count = conscious.decisions_count();
+
+    Json(serde_json::json!({
+        "node_id": state.mesh.id,
+        "timestamp": chrono::Utc::now().timestamp_millis(),
+        "total_decisions": decisions_count,
+        "stats": stats,
+        "insights": insights,
+        "insights_count": insights.len(),
+        "categories": {
+            "routing_performance": insights.iter().filter(|i| i.category == "routing_performance").count(),
+            "prediction_accuracy": insights.iter().filter(|i| i.category == "prediction_accuracy").count(),
+            "intent_performance": insights.iter().filter(|i| i.category == "intent_performance").count(),
+            "anomaly": insights.iter().filter(|i| i.category == "anomaly").count(),
+        }
+    }))
 }
 
 // Conscious API Handlers (v1.0)
