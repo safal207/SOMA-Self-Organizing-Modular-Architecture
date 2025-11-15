@@ -34,9 +34,13 @@
 
 pub mod reflect;
 pub mod feedback;
+pub mod decision_tracker;
 
 pub use reflect::ReflectionAnalyzer;
 pub use feedback::{FeedbackController, FeedbackAction, FeedbackActionType};
+pub use decision_tracker::{
+    DecisionHistory, DecisionOutcome, DecisionStats, DominoDecisionTrace,
+};
 
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -160,6 +164,9 @@ pub struct ConsciousState {
     /// Карта внимания
     attention_map: AttentionMap,
 
+    /// История решений Domino Engine (v1.2+)
+    decision_history: DecisionHistory,
+
     /// Счётчик циклов осознанности
     pub cycle_count: u64,
 
@@ -176,6 +183,7 @@ impl ConsciousState {
             insights: VecDeque::new(),
             max_insights: 100,
             attention_map: AttentionMap::new(),
+            decision_history: DecisionHistory::new(500), // 500 последних решений
             cycle_count: 0,
             last_cycle: Utc::now().timestamp_millis(),
         }
@@ -253,6 +261,48 @@ impl ConsciousState {
     /// Получить количество insights
     pub fn insights_count(&self) -> usize {
         self.insights.len()
+    }
+
+    // === Domino Decision Tracking (v1.2+) ===
+
+    /// Записать решение Domino Engine
+    pub fn record_decision(&mut self, decision: DominoDecisionTrace) {
+        self.decision_history.add_trace(decision);
+    }
+
+    /// Обновить результат решения
+    pub fn update_decision_outcome(&mut self, decision_id: &str, outcome: DecisionOutcome) -> bool {
+        self.decision_history.update_outcome(decision_id, outcome)
+    }
+
+    /// Получить все решения
+    pub fn get_decisions(&self) -> Vec<DominoDecisionTrace> {
+        self.decision_history.get_all()
+    }
+
+    /// Получить последние N решений
+    pub fn get_recent_decisions(&self, n: usize) -> Vec<DominoDecisionTrace> {
+        self.decision_history.get_recent(n)
+    }
+
+    /// Получить решения для конкретного пира
+    pub fn get_decisions_by_peer(&self, peer_id: &str) -> Vec<DominoDecisionTrace> {
+        self.decision_history.get_by_peer(peer_id)
+    }
+
+    /// Получить решения для конкретного типа намерения
+    pub fn get_decisions_by_intent(&self, intent_kind: &str) -> Vec<DominoDecisionTrace> {
+        self.decision_history.get_by_intent(intent_kind)
+    }
+
+    /// Получить статистику успешности решений
+    pub fn get_decision_stats(&self) -> DecisionStats {
+        self.decision_history.get_success_stats()
+    }
+
+    /// Получить количество решений в истории
+    pub fn decisions_count(&self) -> usize {
+        self.decision_history.len()
     }
 }
 
