@@ -9,6 +9,11 @@ use chrono::Utc;
 use futures::{StreamExt, SinkExt};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as TungsteniteMessage};
 
+mod config;
+use config::{
+    timeouts, health, resonance, hebbian,
+};
+
 /// Здоровье соединения с peer
 #[derive(Debug, Clone)]
 pub struct ConnectionHealth {
@@ -34,18 +39,18 @@ impl ConnectionHealth {
         self.successes += 1;
         self.last_success = Instant::now();
         // Плавное восстановление quality
-        self.quality = (self.quality + 0.1).min(1.0);
+        self.quality = (self.quality + health::QUALITY_RECOVERY_STEP).min(1.0);
     }
 
     fn record_failure(&mut self) {
         self.failures += 1;
         self.last_failure = Some(Instant::now());
         // Быстрая деградация quality
-        self.quality = (self.quality - 0.2).max(0.0);
+        self.quality = (self.quality - health::QUALITY_DEGRADATION_STEP).max(0.0);
     }
 
     pub fn is_healthy(&self) -> bool {
-        self.quality > 0.5
+        self.quality > health::MIN_HEALTHY_QUALITY
     }
 
     pub fn failure_rate(&self) -> f64 {
@@ -130,12 +135,12 @@ impl PeerInfo {
             url: None,
             connected: true,
             // Hebbian defaults
-            weight: 0.3,
-            w_min: 0.1,
-            w_max: 1.0,
-            eta_pos: 0.06,
-            eta_neg: 0.03,
-            decay: 0.002,
+            weight: hebbian::WEIGHT_INITIAL,
+            w_min: hebbian::WEIGHT_MIN,
+            w_max: hebbian::WEIGHT_MAX,
+            eta_pos: hebbian::ETA_POSITIVE,
+            eta_neg: hebbian::ETA_NEGATIVE,
+            decay: hebbian::DECAY_RATE,
             last_fire_local: 0,
             last_fire_remote: 0,
         }
@@ -152,12 +157,12 @@ impl PeerInfo {
             url: Some(url),
             connected: false,
             // Hebbian defaults
-            weight: 0.3,
-            w_min: 0.1,
-            w_max: 1.0,
-            eta_pos: 0.06,
-            eta_neg: 0.03,
-            decay: 0.002,
+            weight: hebbian::WEIGHT_INITIAL,
+            w_min: hebbian::WEIGHT_MIN,
+            w_max: hebbian::WEIGHT_MAX,
+            eta_pos: hebbian::ETA_POSITIVE,
+            eta_neg: hebbian::ETA_NEGATIVE,
+            decay: hebbian::DECAY_RATE,
             last_fire_local: 0,
             last_fire_remote: 0,
         }
@@ -253,6 +258,56 @@ impl MeshNode {
         }
     }
 
+    /// Обработать входящее сообщение от peer
+    fn handle_mesh_message(
+        msg: &MeshMessage,
+        node_id: &str,
+        peers: &Arc<Mutex<HashMap<String, PeerInfo>>>,
+        msg_tx: &mpsc::UnboundedSender<MeshMessage>,
+    ) {
+        match msg {
+            MeshMessage::Handshake { node_id: peer_id, .. } => {
+                let mut peers_map = peers.lock().unwrap();
+                peers_map.insert(peer_id.clone(), PeerInfo::new(peer_id.clone()));
+                println!("🤝 Handshake from peer: {}", peer_id);
+
+                // Отправляем Ack
+                let ack = MeshMessage::Ack {
+                    node_id: node_id.to_string(),
+                    ack_to: peer_id.clone(),
+                    timestamp: Utc::now().timestamp_millis(),
+                };
+                msg_tx.send(ack).ok();
+            }
+            MeshMessage::Heartbeat { node_id: peer_id, .. } => {
+                let mut peers_map = peers.lock().unwrap();
+                if let Some(peer) = peers_map.get_mut(peer_id) {
+                    peer.update_heartbeat();
+                }
+            }
+            MeshMessage::StateSync { node_id: peer_id, cells, generation, load, .. } => {
+                let mut peers_map = peers.lock().unwrap();
+                if let Some(peer) = peers_map.get_mut(peer_id) {
+                    peer.update_state(*cells, *generation, *load);
+                    println!("📊 State sync from {}: {} cells, gen {}, load {:.2}",
+                             peer_id, cells, generation, load);
+                }
+            }
+            MeshMessage::Fire { node_id: peer_id, timestamp } => {
+                let mut peers_map = peers.lock().unwrap();
+                if let Some(peer) = peers_map.get_mut(peer_id) {
+                    peer.note_fire_remote(*timestamp);
+                    // Применяем hebbian update с окном совпадения
+                    peer.hebbian_update(timeouts::HEBBIAN_FIRE_WINDOW_MS);
+                    println!("🔥 Fire from {}: ts={}, weight={:.3}", peer_id, timestamp, peer.weight);
+                }
+            }
+            MeshMessage::Ack { ack_to, .. } => {
+                println!("✅ Ack received for: {}", ack_to);
+            }
+        }
+    }
+
     pub async fn handle_peer_connection(&self, socket: WebSocket) {
         let node_id = self.id.clone();
         let peers = self.peers.clone();
@@ -298,47 +353,7 @@ impl MeshNode {
             while let Some(Ok(msg)) = ws_receiver.next().await {
                 if let Message::Text(txt) = msg {
                     if let Ok(parsed) = serde_json::from_str::<MeshMessage>(&txt) {
-                        match &parsed {
-                            MeshMessage::Handshake { node_id: peer_id, .. } => {
-                                let mut peers_map = peers.lock().unwrap();
-                                peers_map.insert(peer_id.clone(), PeerInfo::new(peer_id.clone()));
-                                println!("🤝 Handshake from peer: {}", peer_id);
-
-                                // Отправляем Ack
-                                let ack = MeshMessage::Ack {
-                                    node_id: node_id.clone(),
-                                    ack_to: peer_id.clone(),
-                                    timestamp: Utc::now().timestamp_millis(),
-                                };
-                                msg_tx.send(ack).ok();
-                            }
-                            MeshMessage::Heartbeat { node_id: peer_id, .. } => {
-                                let mut peers_map = peers.lock().unwrap();
-                                if let Some(peer) = peers_map.get_mut(peer_id) {
-                                    peer.update_heartbeat();
-                                }
-                            }
-                            MeshMessage::StateSync { node_id: peer_id, cells, generation, load, .. } => {
-                                let mut peers_map = peers.lock().unwrap();
-                                if let Some(peer) = peers_map.get_mut(peer_id) {
-                                    peer.update_state(*cells, *generation, *load);
-                                    println!("📊 State sync from {}: {} cells, gen {}, load {:.2}",
-                                             peer_id, cells, generation, load);
-                                }
-                            }
-                            MeshMessage::Fire { node_id: peer_id, timestamp } => {
-                                let mut peers_map = peers.lock().unwrap();
-                                if let Some(peer) = peers_map.get_mut(peer_id) {
-                                    peer.note_fire_remote(*timestamp);
-                                    // Применяем hebbian update с окном 120мс
-                                    peer.hebbian_update(120);
-                                    println!("🔥 Fire from {}: ts={}, weight={:.3}", peer_id, timestamp, peer.weight);
-                                }
-                            }
-                            MeshMessage::Ack { ack_to, .. } => {
-                                println!("✅ Ack received for: {}", ack_to);
-                            }
-                        }
+                        Self::handle_mesh_message(&parsed, &node_id, &peers, &msg_tx);
                     }
                 }
             }
@@ -402,7 +417,7 @@ impl MeshNode {
         }
 
         let peer_loads: Vec<f64> = peers.values()
-            .filter(|p| p.is_alive(15000))
+            .filter(|p| p.is_alive(timeouts::PEER_ALIVE_TIMEOUT_MS))
             .map(|p| p.load)
             .collect();
 
@@ -427,7 +442,7 @@ impl MeshNode {
         }
 
         let peer_loads: Vec<f64> = peers.values()
-            .filter(|p| p.is_alive(15000))
+            .filter(|p| p.is_alive(timeouts::PEER_ALIVE_TIMEOUT_MS))
             .map(|p| p.load)
             .collect();
 
@@ -450,15 +465,15 @@ impl MeshNode {
         let peers = self.peers.lock().unwrap();
 
         if peers.is_empty() {
-            return 0.1; // Базовая сила без peers
+            return resonance::BASE_STRENGTH; // Базовая сила без peers
         }
 
         let alive_peers: Vec<&PeerInfo> = peers.values()
-            .filter(|p| p.is_alive(15000))
+            .filter(|p| p.is_alive(timeouts::PEER_ALIVE_TIMEOUT_MS))
             .collect();
 
         if alive_peers.is_empty() {
-            return 0.05; // Минимальная сила при отсутствии живых peers
+            return resonance::MIN_STRENGTH; // Минимальная сила при отсутствии живых peers
         }
 
         // Средняя качество соединений
@@ -466,8 +481,8 @@ impl MeshNode {
             .map(|p| p.health.quality)
             .sum::<f64>() / alive_peers.len() as f64;
 
-        // Маппинг quality (0.0-1.0) -> strength (0.05-0.2)
-        0.05 + (avg_quality * 0.15)
+        // Маппинг quality (0.0-1.0) -> strength (MIN_STRENGTH-MAX_STRENGTH)
+        resonance::MIN_STRENGTH + (avg_quality * resonance::STRENGTH_RANGE)
     }
 
     /// Получить статистику резонанса сети
@@ -514,15 +529,15 @@ impl MeshNode {
     }
 
     pub async fn start_heartbeat_loop(self: Arc<Self>) {
-        let mut tick = interval(Duration::from_secs(3));
+        let mut tick = interval(Duration::from_secs(timeouts::HEARTBEAT_INTERVAL_SEC));
         loop {
             tick.tick().await;
             self.broadcast_heartbeat();
         }
     }
 
-    pub async fn start_cleanup_loop(self: Arc<Self>, timeout_ms: i64) {
-        let mut tick = interval(Duration::from_secs(10));
+    pub async fn start_cleanup_loop(self: Arc<Self>) {
+        let mut tick = interval(Duration::from_secs(timeouts::CLEANUP_INTERVAL_SEC));
         loop {
             tick.tick().await;
             let mut peers = self.peers.lock().unwrap();
@@ -530,7 +545,7 @@ impl MeshNode {
 
             // Отмечаем мертвые peers как disconnected, но сохраняем их для переподключения
             for (id, peer) in peers.iter_mut() {
-                let alive = (now - peer.last_seen) < timeout_ms;
+                let alive = (now - peer.last_seen) < timeouts::PEER_ALIVE_TIMEOUT_MS;
                 if !alive && peer.connected {
                     println!("💀 Peer {} timed out (will attempt reconnect)", id);
                     peer.connected = false;
@@ -584,6 +599,7 @@ impl MeshNode {
                     while let Some(Ok(msg)) = read.next().await {
                         if let TungsteniteMessage::Text(txt) = msg {
                             if let Ok(parsed) = serde_json::from_str::<MeshMessage>(&txt) {
+                                // Для клиентских соединений обрабатываем только основные сообщения
                                 match &parsed {
                                     MeshMessage::Handshake { node_id: peer_id, .. } => {
                                         let mut peers_map = peers.lock().unwrap();
@@ -659,7 +675,7 @@ impl MeshNode {
         let peers = self.peers.lock().unwrap();
 
         peers.values()
-            .filter(|p| p.connected && p.is_alive(15000))
+            .filter(|p| p.connected && p.is_alive(timeouts::PEER_ALIVE_TIMEOUT_MS))
             .max_by(|a, b| {
                 let score_a = a.score(intent_match);
                 let score_b = b.score(intent_match);
@@ -711,7 +727,7 @@ impl MeshNode {
 
     /// Запустить loop автоматического переподключения
     pub async fn start_reconnect_loop(self: Arc<Self>) {
-        let mut tick = interval(Duration::from_secs(30)); // Попытка переподключения каждые 30 секунд
+        let mut tick = interval(Duration::from_secs(timeouts::RECONNECT_INTERVAL_SEC));
 
         loop {
             tick.tick().await;

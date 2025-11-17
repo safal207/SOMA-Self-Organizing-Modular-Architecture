@@ -12,6 +12,7 @@
 
 pub mod cell;
 pub mod stem;
+pub mod config;
 
 pub use cell::{Cell, StemCell};
 pub use stem::{CellInfo, CellRole, StemProcessor};

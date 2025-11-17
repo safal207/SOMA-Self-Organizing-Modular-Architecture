@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::config::{stem, cell};
+
 /// Роли клеток - разные специализации процессоров
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CellRole {
@@ -86,8 +88,8 @@ impl StemProcessor {
             generation: 0,
             cells: HashMap::new(),
             load: 0.0,
-            threshold: 0.7,
-            smoothing: 0.9,
+            threshold: stem::DEFAULT_THRESHOLD,
+            smoothing: stem::DEFAULT_SMOOTHING,
             role_stats: HashMap::new(),
         }
     }
@@ -138,7 +140,7 @@ impl StemProcessor {
         *self.role_stats.entry(role).or_insert(0) += 1;
 
         // Сбрасываем нагрузку после деления
-        self.load *= 0.5;
+        self.load *= stem::LOAD_REDUCTION_FACTOR;
     }
 
     /// Выбрать роль для новой клетки на основе текущего состояния
@@ -163,7 +165,7 @@ impl StemProcessor {
         // Обновляем активность каждой клетки
         for cell in self.cells.values_mut() {
             // Простое затухание активности
-            cell.activity *= 0.95;
+            cell.activity *= cell::ACTIVITY_DECAY;
         }
     }
 
